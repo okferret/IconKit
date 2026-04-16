@@ -18,7 +18,7 @@ struct ContentView: View {
     var body: some View {
         HStack(spacing: 0) {
             sidebar
-                .frame(minWidth: 320, idealWidth: 340, maxWidth: 380)
+                //.frame(minWidth: 200, idealWidth: 240, maxWidth: 380)
                 .background(.ultraThinMaterial)
 
             Divider()
@@ -29,14 +29,14 @@ struct ContentView: View {
             Button("好") {}
         } message: {
             Text(errorMessage)
-        }
+        }.navigationTitle("应用图标")
     }
 
     private var sidebar: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 GroupBox("输入") {
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 10) {
                         Button("选择图片…") { pickImage() }
                         if let url = imageURL {
                             Text(url.lastPathComponent)
@@ -48,6 +48,8 @@ struct ContentView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    .frame(width: 200, alignment: .leading)
+                    .padding(5)
                 }
 
                 GroupBox("导出") {
@@ -72,6 +74,8 @@ struct ContentView: View {
                         Button("导出到文件夹…") { export() }
                             .disabled(image == nil || (!includeApple && !includeAndroid))
                     }
+                    .frame(width: 200, alignment: .leading)
+                    .padding(5)
                 }
 
                 if !statusText.isEmpty {

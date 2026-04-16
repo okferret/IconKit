@@ -38,7 +38,7 @@ final class RealESRGANManager {
 
     private var installDir: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return base.appendingPathComponent("IconForge/realesrgan", isDirectory: true)
+        return base.appendingPathComponent("IconKit/realesrgan", isDirectory: true)
     }
 
     private var binURL: URL { installDir.appendingPathComponent("realesrgan-ncnn-vulkan") }

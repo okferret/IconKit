@@ -107,7 +107,7 @@ struct ScaleReducerView: View {
             Spacer()
         }
         .padding()
-        .navigationTitle("导出图片")
+        .navigationTitle("缩放图片")
     }
 
     private func pick() {
