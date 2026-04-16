@@ -48,7 +48,7 @@ struct ContentView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    .frame(width: 200, alignment: .leading)
+                    .frame(width: 204, alignment: .leading)
                     .padding(5)
                 }
 
@@ -74,7 +74,7 @@ struct ContentView: View {
                         Button("导出到文件夹…") { export() }
                             .disabled(image == nil || (!includeApple && !includeAndroid))
                     }
-                    .frame(width: 200, alignment: .leading)
+                    .frame(width: 204, alignment: .leading)
                     .padding(5)
                 }
 
@@ -90,6 +90,7 @@ struct ContentView: View {
             }
             .padding(12)
         }
+        .background(.background)
     }
 
     private var detail: some View {
