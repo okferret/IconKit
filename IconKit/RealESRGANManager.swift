@@ -1,18 +1,16 @@
 import Foundation
 
-/// Downloads and manages `realesrgan-ncnn-vulkan` runtime without requiring system install.
-////Users/okferret/Downloads/IconKit/IconKit/RealESRGANManager.swift
-/// Strategy:
-/// - On first use, fetch latest release info from GitHub API
-/// - Download a macOS zip asset
-/// - Unzip into Application Support
-/// - Mark binary executable and reuse next time
+/// Manages `realesrgan-ncnn-vulkan` runtime.
+///
+/// Priority:
+/// 1) Prefer **embedded binary** in app bundle: `Resources/RealESRGAN/realesrgan-ncnn-vulkan`
+/// 2) Fallback to **auto-download** into Application Support (optional)
 final class RealESRGANManager {
     static let shared = RealESRGANManager()
-
     private init() {}
 
     enum ManagerError: LocalizedError {
+        case noEmbeddedBinary
         case noReleaseAsset
         case downloadFailed
         case unzipFailed
@@ -20,6 +18,7 @@ final class RealESRGANManager {
 
         var errorDescription: String? {
             switch self {
+            case .noEmbeddedBinary: return "App 内未内嵌 realesrgan-ncnn-vulkan。"
             case .noReleaseAsset: return "未找到适用于 macOS 的 realesrgan-ncnn-vulkan release 资源。"
             case .downloadFailed: return "realesrgan-ncnn-vulkan 下载失败。"
             case .unzipFailed: return "realesrgan-ncnn-vulkan 解压失败。"
@@ -27,6 +26,26 @@ final class RealESRGANManager {
             }
         }
     }
+
+    // MARK: - Embedded
+
+    /// `IconKit.app/Contents/Resources/RealESRGAN/realesrgan-ncnn-vulkan`
+    var embeddedBinaryURL: URL? {
+        Bundle.main.resourceURL?
+            .appendingPathComponent("RealESRGAN", isDirectory: true)
+            .appendingPathComponent("realesrgan-ncnn-vulkan")
+    }
+
+    /// `IconKit.app/Contents/Resources/RealESRGAN/models`
+    var embeddedModelsDir: URL? {
+        guard let base = Bundle.main.resourceURL?.appendingPathComponent("RealESRGAN", isDirectory: true) else {
+            return nil
+        }
+        let models = base.appendingPathComponent("models", isDirectory: true)
+        return FileManager.default.fileExists(atPath: models.path) ? models : nil
+    }
+
+    // MARK: - Download fallback (optional)
 
     struct GitHubRelease: Decodable {
         struct Asset: Decodable {
@@ -36,55 +55,47 @@ final class RealESRGANManager {
         let assets: [Asset]
     }
 
-    private var installDir: URL {
+    /// Actual install directory (may be inside App Sandbox container).
+    var installDirURL: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return base.appendingPathComponent("IconKit/realesrgan", isDirectory: true)
     }
 
-    private var binURL: URL { installDir.appendingPathComponent("realesrgan-ncnn-vulkan") }
-
-    /// Ensures binary exists locally, otherwise downloads and installs.
-    func ensureInstalled() async throws -> URL {
-        if FileManager.default.isExecutableFile(atPath: binURL.path) {
-            return binURL
-        }
-
-        try FileManager.default.createDirectory(at: installDir, withIntermediateDirectories: true)
-
-        let release = try await fetchLatestRelease()
-        guard let asset = pickMacOSAsset(from: release.assets) else {
-            throw ManagerError.noReleaseAsset
-        }
-
-        let zipURL = try await download(urlString: asset.browser_download_url, to: installDir.appendingPathComponent(asset.name))
-        try unzip(zipURL: zipURL, to: installDir)
-
-        // common layouts: either directly contains binary, or inside a folder
-        if FileManager.default.fileExists(atPath: binURL.path) {
-            try makeExecutable(binURL)
-            return binURL
-        }
-
-        // try find recursively
-        if let found = findBinaryRecursively(in: installDir) {
-            // move to expected location
-            try? FileManager.default.removeItem(at: binURL)
-            try FileManager.default.copyItem(at: found, to: binURL)
-            try makeExecutable(binURL)
-            return binURL
-        }
-
-        throw ManagerError.binaryNotFound
+    var installDirPathHint: String {
+        let p = installDirURL.path
+        if p.contains("/Containers/") { return "(Sandbox) \(p)" }
+        return p
     }
 
-    func modelsDir() -> URL? {
-        // many releases ship a "models" folder
-        let direct = installDir.appendingPathComponent("models", isDirectory: true)
+    private var downloadedBinURL: URL { installDirURL.appendingPathComponent("realesrgan-ncnn-vulkan") }
+
+    /// Ensures binary exists.
+    /// - If embedded in bundle, returns embedded path.
+    /// - Else fallback to downloaded binary (download on demand).
+    func ensureInstalled(preferEmbedded: Bool = true) async throws -> URL {
+        if preferEmbedded, let embedded = embeddedBinaryURL, FileManager.default.isExecutableFile(atPath: embedded.path) {
+            return embedded
+        }
+
+        if FileManager.default.isExecutableFile(atPath: downloadedBinURL.path) {
+            return downloadedBinURL
+        }
+
+        try await downloadAndInstallLatest()
+        guard FileManager.default.isExecutableFile(atPath: downloadedBinURL.path) else {
+            throw ManagerError.binaryNotFound
+        }
+        return downloadedBinURL
+    }
+
+    func modelsDir(preferEmbedded: Bool = true) -> URL? {
+        if preferEmbedded, let m = embeddedModelsDir { return m }
+
+        let direct = installDirURL.appendingPathComponent("models", isDirectory: true)
         if FileManager.default.fileExists(atPath: direct.path) { return direct }
 
-        // or "realesrgan-ncnn-vulkan/models" etc.
         let fm = FileManager.default
-        if let enumerator = fm.enumerator(at: installDir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) {
+        if let enumerator = fm.enumerator(at: installDirURL, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) {
             for case let url as URL in enumerator {
                 if url.lastPathComponent == "models" {
                     return url
@@ -92,6 +103,31 @@ final class RealESRGANManager {
             }
         }
         return nil
+    }
+
+    // MARK: - Download latest
+
+    private func downloadAndInstallLatest() async throws {
+        try FileManager.default.createDirectory(at: installDirURL, withIntermediateDirectories: true)
+
+        let release = try await fetchLatestRelease()
+        guard let asset = pickMacOSAsset(from: release.assets) else {
+            throw ManagerError.noReleaseAsset
+        }
+
+        let zipURL = try await download(urlString: asset.browser_download_url, to: installDirURL.appendingPathComponent(asset.name))
+        try unzip(zipURL: zipURL, to: installDirURL)
+
+        // try find binary recursively
+        if let found = findBinaryRecursively(in: installDirURL) {
+            try? FileManager.default.removeItem(at: downloadedBinURL)
+            try FileManager.default.copyItem(at: found, to: downloadedBinURL)
+            try makeExecutable(downloadedBinURL)
+        }
+        // clean files
+        try? FileManager.default.removeItem(at: zipURL)
+        try? FileManager.default.removeItem(at: zipURL.deletingPathExtension())
+        
     }
 
     private func fetchLatestRelease() async throws -> GitHubRelease {
@@ -104,11 +140,7 @@ final class RealESRGANManager {
     }
 
     private func pickMacOSAsset(from assets: [GitHubRelease.Asset]) -> GitHubRelease.Asset? {
-        // Prefer Apple Silicon/Universal; fallback to any macos zip.
         let zips = assets.filter { $0.name.lowercased().contains("mac") && $0.name.lowercased().hasSuffix(".zip") }
-        if let best = zips.first(where: { $0.name.lowercased().contains("arm") || $0.name.lowercased().contains("universal") }) {
-            return best
-        }
         return zips.first
     }
 
@@ -116,15 +148,12 @@ final class RealESRGANManager {
         guard let url = URL(string: urlString) else { throw ManagerError.downloadFailed }
         let (tmp, resp) = try await URLSession.shared.download(from: url)
         guard (resp as? HTTPURLResponse)?.statusCode ?? 0 < 400 else { throw ManagerError.downloadFailed }
-
-        // replace existing
         try? FileManager.default.removeItem(at: dest)
         try FileManager.default.moveItem(at: tmp, to: dest)
         return dest
     }
 
     private func unzip(zipURL: URL, to dir: URL) throws {
-        // Use system unzip to avoid adding SwiftPM deps
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
         proc.arguments = ["-o", zipURL.path, "-d", dir.path]
@@ -157,8 +186,7 @@ final class RealESRGANManager {
     private func makeExecutable(_ url: URL) throws {
         let attr = try FileManager.default.attributesOfItem(atPath: url.path)
         let perm = (attr[.posixPermissions] as? NSNumber)?.intValue ?? 0
-        // add user execute bit
-        let newPerm = perm | 0o100
+        let newPerm = perm | 0o111 // add execute bits
         try FileManager.default.setAttributes([.posixPermissions: newPerm], ofItemAtPath: url.path)
     }
 }

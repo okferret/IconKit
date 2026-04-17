@@ -12,9 +12,9 @@ struct RootView: View {
         NavigationSplitView {
             List(selection: $selection) {
                 Section {
-                    Label("导出缩放图片", systemImage: "arrow.up.left.and.arrow.down.right")
+                    Label("缩放图片", systemImage: "arrow.up.left.and.arrow.down.right")
                         .tag(SidebarItem.scaleReducer)
-                    Label("导出应用图标", systemImage: "square.and.arrow.up")
+                    Label("应用图标", systemImage: "square.and.arrow.up")
                         .tag(SidebarItem.export)
                 } header: {
                     Text("IconKit")
@@ -22,8 +22,8 @@ struct RootView: View {
 
                 Section {
                     Label("拖拽图片到右侧即可开始", systemImage: "photo")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                        .font(.subheadline)
                         .tag(nil as SidebarItem?)
                         .disabled(true)
                 } header: {

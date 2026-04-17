@@ -14,29 +14,27 @@ struct ContentView: View {
     @State private var statusText: String = ""
     @State private var showErrorAlert = false
     @State private var errorMessage = ""
+    
+    private let sidebarWidth: CGFloat = 202
 
     var body: some View {
         HStack(spacing: 0) {
-            sidebar
-                //.frame(minWidth: 200, idealWidth: 240, maxWidth: 380)
-                .background(.ultraThinMaterial)
-
+            sidebar.background(.background)
             Divider()
-
             detail
         }
         .alert("错误", isPresented: $showErrorAlert) {
             Button("好") {}
         } message: {
             Text(errorMessage)
-        }.navigationTitle("应用图标")
+        }
     }
 
     private var sidebar: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 GroupBox("输入") {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 8) {
                         Button("选择图片…") { pickImage() }
                         if let url = imageURL {
                             Text(url.lastPathComponent)
@@ -48,12 +46,12 @@ struct ContentView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    .frame(width: 204, alignment: .leading)
+                    .frame(width: sidebarWidth, alignment: .leading)
                     .padding(5)
                 }
 
                 GroupBox("导出") {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 12) {
                         Toggle("Apple（Asset Catalog）", isOn: $includeApple)
                         if includeApple {
                             VStack(alignment: .leading, spacing: 6) {
@@ -66,7 +64,6 @@ struct ContentView: View {
                                     ))
                                 }
                             }
-                            .padding(.leading, 2)
                         }
 
                         Toggle("Android（mipmap/drawable）", isOn: $includeAndroid)
@@ -74,7 +71,7 @@ struct ContentView: View {
                         Button("导出到文件夹…") { export() }
                             .disabled(image == nil || (!includeApple && !includeAndroid))
                     }
-                    .frame(width: 204, alignment: .leading)
+                    .frame(width: sidebarWidth, alignment: .leading)
                     .padding(5)
                 }
 
@@ -90,7 +87,6 @@ struct ContentView: View {
             }
             .padding(12)
         }
-        .background(.background)
     }
 
     private var detail: some View {

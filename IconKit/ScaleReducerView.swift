@@ -7,16 +7,21 @@ struct ScaleReducerView: View {
         case customFolder
     }
 
-    @State private var inputURL: URL?
+    @State private var inputURLs: [URL] = []
     @State private var status: String = ""
 
     @State private var exportMode: ExportMode = .sameFolder
     @State private var customExportDir: URL?
 
-    /// “提升质量”开关：优先尝试自动下载并调用 Real-ESRGAN（参考 Upscayl 的底层方案），否则回退到高质量插值。
+    /// “提升质量”开关：优先尝试调用 Real-ESRGAN（内嵌优先；否则可回退下载），失败则回退插值。
     @State private var preferAIUpscale: Bool = true
 
-    private var fileName: String { inputURL?.lastPathComponent ?? "" }
+    /// 选择文件夹导入时是否递归扫描
+    @State private var recursiveScan: Bool = false
+
+    /// 批量导出时的运行态
+    @State private var isRunning: Bool = false
+    @State private var progressText: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -25,9 +30,9 @@ struct ScaleReducerView: View {
                     .fill(Color.secondary.opacity(0.12))
 
                 VStack(spacing: 8) {
-                    Text(inputURL == nil ? "拖拽 PNG（@3x/@2x）到这里" : "已载入：\(fileName)")
+                    Text(inputURLs.isEmpty ? "拖拽 PNG（支持多张）到这里" : "已选择：\(inputURLs.count) 张")
                         .font(.headline)
-                    Text("也可以点“选择图片…”。")
+                    Text("也可以点“选择图片…”或“选择文件夹…”。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -35,30 +40,89 @@ struct ScaleReducerView: View {
             }
             .frame(height: 140)
             .onDrop(of: ["public.file-url"], isTargeted: nil) { providers in
-                guard let provider = providers.first else { return false }
-                _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                    if let url { load(url) }
+                var added = false
+                for p in providers {
+                    _ = p.loadObject(ofClass: URL.self) { url, _ in
+                        if let url { addURLs([url]) }
+                    }
+                    added = true
                 }
-                return true
+                return added
             }
 
-            HStack {
-                Button("选择图片…") { pick() }
-                Spacer()
-                Button("导出（@3x/@2x/1x）") {
-                    Task { await exportAsync() }
+            HStack(spacing: 10) {
+                Button("选择图片") {
+                    pickImages()
+                }.foregroundStyle(.foreground)
+                Button("选择文件夹") { pickFolder() }
+
+                Toggle("递归", isOn: $recursiveScan)
+                    .toggleStyle(.switch)
+                    .help("选择文件夹时，是否递归扫描子目录")
+
+                Button("清空") {
+                    inputURLs.removeAll()
+                    status = ""
+                    progressText = ""
                 }
-                .disabled(inputURL == nil)
+                .disabled(inputURLs.isEmpty || isRunning)
+
+                Button("打开 Real-ESRGAN 目录") { openRealESRGANDir() }
+
+                Spacer()
+
+                Button(isRunning ? "处理中…" : "批量导出") {
+                    Task { await exportBatchAsync() }
+                }
+                .disabled(inputURLs.isEmpty || isRunning || (exportMode == .customFolder && customExportDir == nil))
+            }
+
+            if !inputURLs.isEmpty {
+                GroupBox("文件列表") {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(inputURLs, id: \.self) { url in
+                                HStack {
+                                    Text(url.lastPathComponent)
+                                        .font(.caption)
+                                        .lineLimit(1)
+                                    Spacer()
+                                    Button {
+                                        inputURLs.removeAll { $0 == url }
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(isRunning)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .frame(maxHeight: 140)
+                }
             }
 
             GroupBox("放大/质量") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Toggle("提升质量（自动下载并使用 Real-ESRGAN；无则插值）", isOn: $preferAIUpscale)
-                    Text("说明：开启后会在首次使用时自动下载 realesrgan-ncnn-vulkan 到“应用支持目录”，无需系统安装。")
+                    Toggle("提升质量（优先内嵌 Real-ESRGAN；无则插值）", isOn: $preferAIUpscale)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Real-ESRGAN 安装/缓存目录")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(RealESRGANManager.shared.installDirPathHint)
+                            .font(.caption)
+                            .textSelection(.enabled)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text("提示：批量处理时，只有当输入文件名包含 @2x 且需要生成 @3x 时才会触发 AI 放大。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                .padding(.top, 4)
+                .padding(5)
             }
 
             GroupBox("导出目录") {
@@ -67,14 +131,15 @@ struct ScaleReducerView: View {
                         get: { exportMode == .sameFolder ? 0 : 1 },
                         set: { exportMode = ($0 == 0) ? .sameFolder : .customFolder }
                     )) {
-                        Text("同一文件夹（默认）").tag(0)
-                        Text("指定目录").tag(1)
+                        Text("同一文件夹（每张图各自目录）").tag(0)
+                        Text("统一导出到指定目录").tag(1)
                     }
                     .pickerStyle(.segmented)
 
                     if exportMode == .customFolder {
-                        HStack {
-                            Button("选择导出目录…") { pickExportDir() }
+                        HStack(spacing: 5) {
+                            Button("选择导出目录") { pickExportDir() }
+                                .disabled(isRunning)
                             if let customExportDir {
                                 Text(customExportDir.path)
                                     .font(.caption)
@@ -87,36 +152,68 @@ struct ScaleReducerView: View {
                             }
                         }
                     } else {
-                        Text("将导出到输入文件所在目录。")
+                        Text("将导出到每张输入图片所在目录。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
-                .padding(.top, 4)
+                .padding(5)
             }
 
-            Text("规则：\n• 输入 @3x：生成 3 个文件：@3x（重新渲染一份）、@2x（2/3）、1x（1/3）\n• 输入 @2x：生成 3 个文件：@3x（放大到 1.5x，尽量提升质量）、@2x（重新渲染一份）、1x（1/2）\n• 其他：生成 1x（重新渲染一份）")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if !progressText.isEmpty {
+                Text(progressText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             if !status.isEmpty {
-                Text(status)
-                    .font(.caption)
+                GroupBox("日志") {
+                    ScrollView {
+                        Text(status)
+                            .font(.caption)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 200)
+                }
             }
 
             Spacer()
         }
         .padding()
-        .navigationTitle("缩放图片")
+        .navigationTitle("ScaleReducer")
     }
 
-    private func pick() {
+    // MARK: - UI Actions
+
+    private func openRealESRGANDir() {
+        let url = RealESRGANManager.shared.installDirURL
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(url)
+    }
+
+    private func pickImages() {
         let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [.png]
-        if panel.runModal() == .OK, let url = panel.url {
-            load(url)
+        if panel.runModal() == .OK {
+            addURLs(panel.urls)
+        }
+    }
+
+    private func pickFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "选择"
+        if panel.runModal() == .OK, let dir = panel.url {
+            let urls = scanPNGs(in: dir, recursive: recursiveScan)
+            addURLs(urls)
+            if urls.isEmpty {
+                status = appendLog(status, "⚠️ 文件夹内未找到 PNG：\(dir.path)")
+            }
         }
     }
 
@@ -131,12 +228,35 @@ struct ScaleReducerView: View {
         }
     }
 
-    private func load(_ url: URL) {
+    private func addURLs(_ urls: [URL]) {
+        let filtered = urls
+            .filter { $0.pathExtension.lowercased() == "png" }
+            .map { $0.standardizedFileURL }
+
         DispatchQueue.main.async {
-            inputURL = url
-            status = ""
+            let set = Set(inputURLs)
+            let newOnes = filtered.filter { !set.contains($0) }
+            inputURLs.append(contentsOf: newOnes)
+            inputURLs.sort { $0.lastPathComponent.lowercased() < $1.lastPathComponent.lowercased() }
         }
     }
+
+    private func scanPNGs(in dir: URL, recursive: Bool) -> [URL] {
+        let fm = FileManager.default
+        let opts: FileManager.DirectoryEnumerationOptions = recursive ? [.skipsHiddenFiles] : [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+        guard let e = fm.enumerator(at: dir, includingPropertiesForKeys: [.isRegularFileKey], options: opts) else {
+            return []
+        }
+        var out: [URL] = []
+        for case let url as URL in e {
+            if url.pathExtension.lowercased() == "png" {
+                out.append(url)
+            }
+        }
+        return out
+    }
+
+    // MARK: - Export
 
     private func resolveOutDir(for inputURL: URL) -> URL? {
         switch exportMode {
@@ -148,87 +268,86 @@ struct ScaleReducerView: View {
     }
 
     @MainActor
-    private func exportAsync() async {
-        guard let inputURL else { return }
-        guard let outDir = resolveOutDir(for: inputURL) else {
-            status = "请先选择导出目录。"
-            return
+    private func exportBatchAsync() async {
+        if inputURLs.isEmpty { return }
+
+        isRunning = true
+        defer { isRunning = false }
+
+        var ok = 0
+        var failed = 0
+
+        status = ""
+        progressText = ""
+
+        for (idx, url) in inputURLs.enumerated() {
+            progressText = "处理中：\(idx + 1)/\(inputURLs.count) · \(url.lastPathComponent)"
+
+            do {
+                try await exportOneAsync(inputURL: url)
+                ok += 1
+                status = appendLog(status, "✅ \(url.lastPathComponent)")
+            } catch {
+                failed += 1
+                status = appendLog(status, "❌ \(url.lastPathComponent) · \(error.localizedDescription)")
+            }
         }
 
-        do {
-            let data = try Data(contentsOf: inputURL)
-            guard let srcRep = NSBitmapImageRep(data: data) else {
-                status = "无法解析 PNG。"
-                return
+        progressText = "完成：成功 \(ok) / 失败 \(failed)"
+    }
+
+    private func exportOneAsync(inputURL: URL) async throws {
+        guard let outDir = resolveOutDir(for: inputURL) else {
+            throw NSError(domain: "IconKit", code: -1, userInfo: [NSLocalizedDescriptionKey: "请先选择导出目录。"])
+        }
+
+        let data = try Data(contentsOf: inputURL)
+        guard let srcRep = NSBitmapImageRep(data: data) else {
+            throw NSError(domain: "IconKit", code: -2, userInfo: [NSLocalizedDescriptionKey: "无法解析 PNG。"])
+        }
+
+        let srcW = srcRep.pixelsWide
+        let srcH = srcRep.pixelsHigh
+
+        let inputName = inputURL.lastPathComponent
+        let baseName = inputURL.deletingPathExtension().lastPathComponent
+            .replacingOccurrences(of: "@3x", with: "")
+            .replacingOccurrences(of: "@2x", with: "")
+
+        if inputName.contains("@3x") {
+            if let out = renderPNG(from: srcRep, targetPixelsWide: srcW, targetPixelsHigh: srcH) {
+                try out.write(to: outDir.appendingPathComponent("\(baseName)@3x.png"))
             }
-
-            let srcW = srcRep.pixelsWide
-            let srcH = srcRep.pixelsHigh
-
-            let baseName = inputURL.deletingPathExtension().lastPathComponent
-                .replacingOccurrences(of: "@3x", with: "")
-                .replacingOccurrences(of: "@2x", with: "")
-
-            var written: [String] = []
-
-            if fileName.contains("@3x") {
-                if let out = renderPNG(from: srcRep, targetPixelsWide: srcW, targetPixelsHigh: srcH) {
-                    let url = outDir.appendingPathComponent("\(baseName)@3x.png")
-                    try out.write(to: url)
-                    written.append(url.lastPathComponent)
-                }
-                if let out = renderPNG(from: srcRep,
-                                       targetPixelsWide: Int(round(Double(srcW) * 2.0 / 3.0)),
-                                       targetPixelsHigh: Int(round(Double(srcH) * 2.0 / 3.0))) {
-                    let url = outDir.appendingPathComponent("\(baseName)@2x.png")
-                    try out.write(to: url)
-                    written.append(url.lastPathComponent)
-                }
-                if let out = renderPNG(from: srcRep,
-                                       targetPixelsWide: Int(round(Double(srcW) / 3.0)),
-                                       targetPixelsHigh: Int(round(Double(srcH) / 3.0))) {
-                    let url = outDir.appendingPathComponent("\(baseName).png")
-                    try out.write(to: url)
-                    written.append(url.lastPathComponent)
-                }
-            } else if fileName.contains("@2x") {
-                if let out3x = try await make3xFrom2x(inputURL: inputURL, srcRep: srcRep) {
-                    let url = outDir.appendingPathComponent("\(baseName)@3x.png")
-                    try out3x.write(to: url)
-                    written.append(url.lastPathComponent)
-                }
-
-                if let out = renderPNG(from: srcRep, targetPixelsWide: srcW, targetPixelsHigh: srcH) {
-                    let url = outDir.appendingPathComponent("\(baseName)@2x.png")
-                    try out.write(to: url)
-                    written.append(url.lastPathComponent)
-                }
-                if let out = renderPNG(from: srcRep,
-                                       targetPixelsWide: Int(round(Double(srcW) / 2.0)),
-                                       targetPixelsHigh: Int(round(Double(srcH) / 2.0))) {
-                    let url = outDir.appendingPathComponent("\(baseName).png")
-                    try out.write(to: url)
-                    written.append(url.lastPathComponent)
-                }
-            } else {
-                if let out = renderPNG(from: srcRep, targetPixelsWide: srcW, targetPixelsHigh: srcH) {
-                    let url = outDir.appendingPathComponent("\(baseName).png")
-                    try out.write(to: url)
-                    written.append(url.lastPathComponent)
-                }
+            if let out = renderPNG(from: srcRep,
+                                   targetPixelsWide: Int(round(Double(srcW) * 2.0 / 3.0)),
+                                   targetPixelsHigh: Int(round(Double(srcH) * 2.0 / 3.0))) {
+                try out.write(to: outDir.appendingPathComponent("\(baseName)@2x.png"))
             }
-
-            status = written.isEmpty
-                ? "没有生成任何文件。"
-                : "已导出到：\(outDir.path)\n" + written.joined(separator: "\n")
-        } catch {
-            status = "导出失败：\(error.localizedDescription)"
+            if let out = renderPNG(from: srcRep,
+                                   targetPixelsWide: Int(round(Double(srcW) / 3.0)),
+                                   targetPixelsHigh: Int(round(Double(srcH) / 3.0))) {
+                try out.write(to: outDir.appendingPathComponent("\(baseName).png"))
+            }
+        } else if inputName.contains("@2x") {
+            if let out3x = try await make3xFrom2x(inputURL: inputURL, srcRep: srcRep) {
+                try out3x.write(to: outDir.appendingPathComponent("\(baseName)@3x.png"))
+            }
+            if let out = renderPNG(from: srcRep, targetPixelsWide: srcW, targetPixelsHigh: srcH) {
+                try out.write(to: outDir.appendingPathComponent("\(baseName)@2x.png"))
+            }
+            if let out = renderPNG(from: srcRep,
+                                   targetPixelsWide: Int(round(Double(srcW) / 2.0)),
+                                   targetPixelsHigh: Int(round(Double(srcH) / 2.0))) {
+                try out.write(to: outDir.appendingPathComponent("\(baseName).png"))
+            }
+        } else {
+            if let out = renderPNG(from: srcRep, targetPixelsWide: srcW, targetPixelsHigh: srcH) {
+                try out.write(to: outDir.appendingPathComponent("\(baseName).png"))
+            }
         }
     }
 
     /// @2x -> @3x：尽量提升质量。
-    /// - preferAIUpscale 开启：自动下载/调用 realesrgan-ncnn-vulkan 先 2x 到 @4x，再高质量缩回 @3x。
-    /// - 否则：直接插值放大到 1.5x。
     private func make3xFrom2x(inputURL: URL, srcRep: NSBitmapImageRep) async throws -> Data? {
         let srcW = srcRep.pixelsWide
         let srcH = srcRep.pixelsHigh
@@ -249,17 +368,16 @@ struct ScaleReducerView: View {
         return renderPNG(from: srcRep, targetPixelsWide: targetW, targetPixelsHigh: targetH)
     }
 
-    /// Uses realesrgan-ncnn-vulkan (auto-installed) to upscale input by 2x -> output(@4x from @2x).
     private func aiUpscaleTo4x(inputURL: URL) async throws -> Data? {
         let tool: URL
         do {
-            tool = try await RealESRGANManager.shared.ensureInstalled()
+            tool = try await RealESRGANManager.shared.ensureInstalled(preferEmbedded: true)
         } catch {
             return nil
         }
 
         let fm = FileManager.default
-        let tmpDir = fm.temporaryDirectory.appendingPathComponent("IconForge", isDirectory: true)
+        let tmpDir = fm.temporaryDirectory.appendingPathComponent("IconKit", isDirectory: true)
         try? fm.createDirectory(at: tmpDir, withIntermediateDirectories: true)
 
         let outURL = tmpDir.appendingPathComponent(UUID().uuidString + ".png")
@@ -274,8 +392,7 @@ struct ScaleReducerView: View {
             "-f", "png"
         ]
 
-        // make sure models can be found
-        if let models = RealESRGANManager.shared.modelsDir() {
+        if let models = RealESRGANManager.shared.modelsDir(preferEmbedded: true) {
             proc.currentDirectoryURL = models.deletingLastPathComponent()
         }
 
@@ -337,6 +454,11 @@ struct ScaleReducerView: View {
                       hints: [.interpolation: NSImageInterpolation.high])
 
         return dstRep.representation(using: .png, properties: [:])
+    }
+
+    private func appendLog(_ current: String, _ line: String) -> String {
+        if current.isEmpty { return line }
+        return current + "\n" + line
     }
 }
 
