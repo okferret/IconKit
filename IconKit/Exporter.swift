@@ -51,15 +51,16 @@ enum IconForgeError: LocalizedError {
 struct IconExporter {
 
     /// 导出所有选中的 Apple 图标集
+    /// 按 AppleIconSet.allCases 的稳定顺序遍历，确保输出目录顺序一致
     static func exportAppleAll(from image: NSImage, to outDir: URL, sets: Set<AppleIconSet>) throws {
         try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 
+        // 使用 allCases 保证稳定顺序，同时只处理 sets 中包含的项
         for set in AppleIconSet.allCases where sets.contains(set) {
             let setDir = outDir.appendingPathComponent("\(set.rawValue).appiconset", isDirectory: true)
             try exportAppleAppIconSet(from: image, to: setDir, kind: set)
         }
     }
-
     /// 生成 AppIcon.appiconset（含 Contents.json）
     static func exportAppleAppIconSet(from image: NSImage, to appIconSetDir: URL, kind: AppleIconSet) throws {
         try FileManager.default.createDirectory(at: appIconSetDir, withIntermediateDirectories: true)
@@ -80,10 +81,10 @@ struct IconExporter {
             try png.write(to: fileURL)
 
             var item: [String: Any] = [
+                "filename": fileName,
                 "idiom":    spec.idiom,
+                "scale":    scaleStr,
                 "size":     String(format: "%.4gx%.4g", spec.pointSize, spec.pointSize),
-                "scale":    "\(scaleStr)",
-                "filename": fileName
             ]
             if let role     = spec.role     { item["role"]     = role }
             if let subtype  = spec.subtype  { item["subtype"]  = subtype }

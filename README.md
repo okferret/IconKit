@@ -46,13 +46,14 @@
 
 ### 📐 ScaleReducer（多倍图缩放）
 
-将 `@3x` 或 `@2x` PNG/JPEG 自动生成完整的三套资源：
+将 `@1x`、`@2x` 或 `@3x` PNG/JPEG 自动生成完整的三套资源：
 
 | 输入 | 输出 |
 |------|------|
-| `xxx@3x.png` | `@3x`（原图）、`@2x`（2/3）、`@1x`（1/3） |
-| `xxx@2x.png` | `@3x`（AI 放大或插值）、`@2x`（原图）、`@1x`（1/2） |
-| 其他文件名 | 原样输出 |
+| `xxx@3x.png` | `@3x`（原图）、`@2x`（2/3 缩小）、`@1x`（1/3 缩小） |
+| `xxx@2x.png` | `@3x`（AI 放大 ×1.5）、`@2x`（原图）、`@1x`（1/2 缩小） |
+| `xxx@1x.png` | `@3x`（AI 放大 ×3）、`@2x`（AI 放大 ×2）、`@1x`（原图） |
+| 其他文件名 | 原样输出（仅输出原图） |
 
 **特性：**
 - 支持 PNG 和 JPEG 输入
@@ -65,7 +66,11 @@
 
 ## Real-ESRGAN 集成（AI 放大）
 
-ScaleReducer 在处理 `@2x → @3x` 时，可选用 **Real-ESRGAN（realesrgan-ncnn-vulkan）** 提升放大质量。
+ScaleReducer 在处理 `@1x → @2x/@3x` 及 `@2x → @3x` 时，可选用 **Real-ESRGAN（realesrgan-ncnn-vulkan）** 提升放大质量。
+
+**AI 放大策略：**
+- `@1x → @2x/@3x`：AI 只跑一次 4x 放大，然后缩放到 2x（×0.5）和 3x（×0.75）
+- `@2x → @3x`：AI 4x 放大后缩到 3x（×0.75）
 
 ### 使用方式
 
@@ -148,6 +153,13 @@ IconKit/
 ---
 
 ## 更新记录
+
+### 2026-05-14
+- **新增 `@1x` 放大支持**：`@1x` 图片可自动生成 `@2x` 和 `@3x`（AI 放大或插值）
+- **优化 AI 调用**：`@1x` 放大时 AI 只跑一次，复用 4x 结果同时生成 2x 和 3x
+- 修复 `AndroidExporter.swift` 函数闭合错误
+- 修复 `RootView.swift` async/await 语法错误
+- 清理 `RealESRGANManager.swift` 冗余代码
 
 ### 2026-05-11
 - 新增 tvOS、visionOS 图标导出支持

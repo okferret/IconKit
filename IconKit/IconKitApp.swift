@@ -5,8 +5,8 @@ struct IconKitApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
-                .frame(minWidth: 860, minHeight: 560)
         }
+        .windowResizability(.contentSize)
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: true))
         .commands {
@@ -17,7 +17,9 @@ struct IconKitApp: App {
                 }
                 .keyboardShortcut("o", modifiers: .command)
 
-                Button("导出…") {
+                Divider()
+
+                Button("导出图标…") {
                     NotificationCenter.default.post(name: .exportIcons, object: nil)
                 }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
@@ -27,6 +29,6 @@ struct IconKitApp: App {
 }
 
 extension Notification.Name {
-    static let pickImage = Notification.Name("IconKit.pickImage")
+    static let pickImage   = Notification.Name("IconKit.pickImage")
     static let exportIcons = Notification.Name("IconKit.exportIcons")
 }

@@ -88,11 +88,32 @@ enum ImageResizer {
 
     // MARK: - Image info
 
-    /// 返回图片的像素尺寸（取第一个 bitmap rep，或回退到 size）。
+    /// 返回图片的像素尺寸。
+    ///
+    /// 优先级：
+    /// 1. 最大的 NSBitmapImageRep（像素尺寸最大者，适合多分辨率 TIFF）
+    /// 2. 其他 rep 的 pixelsWide/pixelsHigh（PDF/矢量图会返回 0，需回退）
+    /// 3. 回退到 image.size（逻辑点尺寸，矢量图场景）
     static func pixelSize(of image: NSImage) -> CGSize {
-        if let rep = image.representations.first as? NSBitmapImageRep {
+        // 找到像素面积最大的 BitmapImageRep
+        let bestBitmap = image.representations
+            .compactMap { $0 as? NSBitmapImageRep }
+            .max { ($0.pixelsWide * $0.pixelsHigh) < ($1.pixelsWide * $1.pixelsHigh) }
+
+        if let rep = bestBitmap, rep.pixelsWide > 0, rep.pixelsHigh > 0 {
             return CGSize(width: rep.pixelsWide, height: rep.pixelsHigh)
         }
+
+        // 对于 PDF/矢量图，尝试从任意 rep 获取非零尺寸
+        for rep in image.representations {
+            let w = rep.pixelsWide
+            let h = rep.pixelsHigh
+            if w > 0, h > 0 {
+                return CGSize(width: w, height: h)
+            }
+        }
+
+        // 最终回退：使用逻辑点尺寸（矢量图场景下 size 即为设计尺寸）
         return image.size
     }
 }
