@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import SystemConfiguration
 
 // MARK: - RealESRGANManager
 
@@ -99,6 +100,34 @@ final class RealESRGANManager: ObservableObject {
     @Published var checkFeedback: String? = nil
     /// 是否正在检查更新
     @Published var isCheckingUpdate: Bool = false
+
+    // MARK: - Private State
+
+    /// 用于防止多次并发检查时 sleep 结束后错误清除反馈信息
+    private var currentCheckID: UUID = UUID()
+
+    // MARK: - GitHub Token
+
+    private static let tokenKey = "com.iconkit.github.token"
+
+    /// 当前保存的 GitHub Personal Access Token（存储于 UserDefaults）。
+    /// 设置后自动持久化；置为 nil 或空字符串时删除。
+    var githubToken: String? {
+        get {
+            let v = UserDefaults.standard.string(forKey: Self.tokenKey)
+            return (v?.isEmpty == false) ? v : nil
+        }
+        set {
+            if let v = newValue, !v.isEmpty {
+                UserDefaults.standard.set(v, forKey: Self.tokenKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.tokenKey)
+            }
+        }
+    }
+
+    /// Token 是否已配置
+    var hasGitHubToken: Bool { !(githubToken ?? "").isEmpty }
 
     // MARK: - Computed paths（纯计算，无 actor 隔离）
 
@@ -202,32 +231,35 @@ final class RealESRGANManager: ObservableObject {
         // 类本身已标注 @MainActor，直接赋值即可，无需 MainActor.run
         isCheckingUpdate = true
         checkFeedback = nil
+        // 记录本次检查的任务 ID，防止 sleep 结束后被后续检查的结果覆盖
+        let checkID = UUID()
+        currentCheckID = checkID
         do {
             let release = try await fetchLatestRelease()
-            let current = installedVersion ?? ""
-            let hasUpdate = !current.isEmpty && current != release.tag_name
+            let currentRaw = installedVersion ?? ""
+            let currentTag = currentRaw.hasPrefix("内嵌 ") ? String(currentRaw.dropFirst(3)) : currentRaw
+            let hasUpdate = !currentTag.isEmpty && currentTag != release.tag_name
             latestVersion = release.tag_name
             updateAvailable = hasUpdate
             isCheckingUpdate = false
             if hasUpdate {
-                checkFeedback = "发现新版本 \(release.tag_name)（当前 \(current)）"
-            } else if current.isEmpty {
+                checkFeedback = "发现新版本 \(release.tag_name)（当前 \(currentRaw)）"
+            } else if currentTag.isEmpty {
                 checkFeedback = "最新版本：\(release.tag_name)"
             } else {
-                checkFeedback = "已是最新版本 \(current) ✓"
+                checkFeedback = "已是最新版本 \(currentRaw) ✓"
             }
-            // 3 秒后自动清除反馈
+            // 3 秒后自动清除反馈（仅当本次检查仍是最新一次时才清除）
             try? await Task.sleep(nanoseconds: 3_000_000_000)
-            if !updateAvailable { checkFeedback = nil }
+            if currentCheckID == checkID, !updateAvailable { checkFeedback = nil }
         } catch {
             let msg = error.localizedDescription
             isCheckingUpdate = false
             checkFeedback = "检查失败：\(msg)"
             try? await Task.sleep(nanoseconds: 3_000_000_000)
-            checkFeedback = nil
+            if currentCheckID == checkID { checkFeedback = nil }
         }
     }
-
     /// 返回 models 目录（优先内嵌，其次已下载）。
     func modelsDir(preferEmbedded: Bool = true) -> URL? {
         if preferEmbedded, let m = embeddedModelsDir { return m }
@@ -274,6 +306,35 @@ final class RealESRGANManager: ObservableObject {
         return nil
     }
 
+    // MARK: - Proxy-Aware URLSession
+
+    /// 检测系统当前代理设置，返回代理感知的 URLSessionConfiguration。
+    ///
+    /// 直接将 CFNetworkCopySystemProxySettings() 返回的原始字典赋给
+    /// connectionProxyDictionary，确保 URLSession 使用系统代理。
+    private func makeProxyAwareConfiguration() -> URLSessionConfiguration {
+        let config = URLSessionConfiguration.default
+
+        if let proxySettings = CFNetworkCopySystemProxySettings()?.takeRetainedValue() as NSDictionary? {
+            // 直接使用原始字典，key 已是 CFString/NSString，与 connectionProxyDictionary 兼容
+            config.connectionProxyDictionary = proxySettings as? [AnyHashable: Any]
+            print("[RealESRGAN] 代理配置已注入: HTTPProxy=\(proxySettings["HTTPProxy"] ?? "nil"):\(proxySettings["HTTPPort"] ?? "nil") HTTPSProxy=\(proxySettings["HTTPSProxy"] ?? "nil"):\(proxySettings["HTTPSPort"] ?? "nil")")
+        } else {
+            print("[RealESRGAN] 未检测到系统代理配置，使用直连")
+        }
+
+        return config
+    }
+
+    /// 构建带标准请求头的 URLRequest（GitHub API 及文件下载通用）。
+    private func makeRequest(url: URL, timeoutInterval: TimeInterval = 30) -> URLRequest {
+        var req = URLRequest(url: url)
+        req.timeoutInterval = timeoutInterval
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.setValue("IconKit/1.0 (macOS; Swift)", forHTTPHeaderField: "User-Agent")
+        return req
+    }
+
     // MARK: - Private Download
 
     private func performDownload(force: Bool = false) async {
@@ -298,8 +359,11 @@ final class RealESRGANManager: ObservableObject {
         let release = try await fetchLatestRelease()
 
         // 若非强制更新且版本相同，跳过下载
-        if !force, let current = installedVersion, current == release.tag_name, isAvailable {
-            installState = .installed(version: current)
+        // 注意：installedVersion 对内嵌版本返回 "内嵌 vX.X.X"，需去除前缀后再比较
+        let currentRaw = installedVersion ?? ""
+        let currentTag = currentRaw.hasPrefix("内嵌 ") ? String(currentRaw.dropFirst(3)) : currentRaw
+        if !force, !currentTag.isEmpty, currentTag == release.tag_name, isAvailable {
+            installState = .installed(version: currentRaw)
             return
         }
 
@@ -348,12 +412,38 @@ final class RealESRGANManager: ObservableObject {
 
     private func fetchLatestRelease() async throws -> GitHubRelease {
         let url = URL(string: "https://api.github.com/repos/xinntao/Real-ESRGAN-ncnn-vulkan/releases/latest")!
-        var req = URLRequest(url: url)
-        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        req.timeoutInterval = 15
+        var req = makeRequest(url: url, timeoutInterval: 15)
 
-        let (data, response) = try await URLSession.shared.data(for: req)
+        // 若设置了 GitHub Token，注入认证头以提升 API 速率限制（60→5000次/小时）
+        // 优先级：Keychain 存储的 Token > 环境变量 GITHUB_TOKEN
+        let keychainToken = githubToken
+        let envToken = ProcessInfo.processInfo.environment["GITHUB_TOKEN"]
+        let token = keychainToken ?? envToken
+
+        print("[RealESRGAN] fetchLatestRelease: keychainToken=\(keychainToken != nil ? "已设置(\(keychainToken!.prefix(8))...)" : "nil") envToken=\(envToken != nil ? "已设置" : "nil")")
+
+        if let token, !token.isEmpty {
+            // GitHub API 支持 token 和 Bearer 两种格式
+            // Fine-grained token (github_pat_) 和 classic token (ghp_) 均使用 token 前缀
+            req.setValue("token \(token)", forHTTPHeaderField: "Authorization")
+            print("[RealESRGAN] 已注入 Authorization 头，token 前缀: \(token.prefix(4))")
+        } else {
+            print("[RealESRGAN] 未配置 Token，使用匿名请求（限速 60次/小时）")
+        }
+
+        // 使用代理感知的 URLSession
+        let session = URLSession(configuration: makeProxyAwareConfiguration())
+        let (data, response) = try await session.data(for: req)
         if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+            let body = String(data: data, encoding: .utf8) ?? "(no body)"
+            print("[RealESRGAN] fetchLatestRelease 失败 HTTP \(http.statusCode) url=\(http.url?.absoluteString ?? "?") body=\(body)")
+            // 速率限制时给出更友好的错误提示
+            if http.statusCode == 403, body.contains("rate limit") {
+                throw ManagerError.downloadFailed("GitHub API 速率限制，请稍后重试或配置 GitHub Token")
+            }
+            if http.statusCode == 401 {
+                throw ManagerError.downloadFailed("GitHub Token 无效或已过期，请重新配置")
+            }
             throw ManagerError.downloadFailed("HTTP \(http.statusCode)")
         }
         return try JSONDecoder().decode(GitHubRelease.self, from: data)
@@ -375,15 +465,31 @@ final class RealESRGANManager: ObservableObject {
         guard let url = URL(string: urlString) else {
             throw ManagerError.downloadFailed("无效 URL：\(urlString)")
         }
+        print("[RealESRGAN] 开始下载 url=\(urlString)")
+        // 构建带 User-Agent 的请求，避免某些代理/CDN 因缺少 UA 而返回 403
+        let req = makeRequest(url: url, timeoutInterval: 60)
         return try await withCheckedThrowingContinuation { continuation in
             let delegate = DownloadProgressDelegate(
                 dest: dest,
                 onProgress: onProgress,
-                completion: { continuation.resume(with: $0) }
+                completion: { result in
+                    switch result {
+                    case .success(let u):
+                        print("[RealESRGAN] 下载成功 dest=\(u.path)")
+                    case .failure(let e):
+                        print("[RealESRGAN] 下载失败 error=\(e)")
+                    }
+                    continuation.resume(with: result)
+                }
             )
-            let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+            // 使用代理感知的配置，确保下载时也能走系统代理
+            // 注意：URLSession 强引用 delegate，delegate 通过 weak 引用 session，避免循环引用
+            let session = URLSession(configuration: makeProxyAwareConfiguration(), delegate: delegate, delegateQueue: nil)
             delegate.session = session
-            session.downloadTask(with: url).resume()
+            let task = session.downloadTask(with: req)
+            task.resume()
+            // 持有 session 直到任务完成，防止提前释放
+            _ = session
         }
     }
 
@@ -430,7 +536,9 @@ private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelega
     let dest: URL
     let onProgress: (Double) -> Void
     let completion: (Result<URL, Error>) -> Void
-    var session: URLSession?
+    /// 使用 weak 引用避免与 URLSession 形成循环引用
+    /// （URLSession 强引用 delegate，delegate 弱引用 session）
+    weak var session: URLSession?
 
     /// 防止 didFinishDownloadingTo 和 didCompleteWithError 同时触发时 completion 被多次调用
     private var completed = false
@@ -441,6 +549,22 @@ private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelega
         self.dest = dest
         self.onProgress = onProgress
         self.completion = completion
+    }
+
+    // 处理 HTTP 重定向（GitHub Release 下载会 302 跳转到 objects.githubusercontent.com）
+    // 默认实现会跟随重定向但可能丢失自定义请求头，此处显式保留 User-Agent
+    func urlSession(_ session: URLSession,
+                    task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        var redirectRequest = request
+        print("[RealESRGAN] 重定向 \(response.statusCode) -> \(request.url?.absoluteString ?? "?")")
+        // 保留 User-Agent，防止重定向后被 CDN/代理拦截返回 403
+        if redirectRequest.value(forHTTPHeaderField: "User-Agent") == nil {
+            redirectRequest.setValue("IconKit/1.0 (macOS; Swift)", forHTTPHeaderField: "User-Agent")
+        }
+        completionHandler(redirectRequest)
     }
 
     func urlSession(_ session: URLSession,
@@ -478,3 +602,4 @@ private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelega
         self.session = nil
     }
 }
+

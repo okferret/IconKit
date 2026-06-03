@@ -8,7 +8,6 @@
 
 /* Begin PBXBuildFile section */
 		A10000000000000000000010 /* IconKitApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* IconKitApp.swift */; };
-		A10000000000000000000011 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* ContentView.swift */; };
 		A10000000000000000000012 /* Exporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* Exporter.swift */; };
 		A10000000000000000000013 /* ImageResizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000004 /* ImageResizer.swift */; };
 		A10000000000000000000014 /* AndroidExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000005 /* AndroidExporter.swift */; };
@@ -21,7 +20,6 @@
 
 /* Begin PBXFileReference section */
 		A10000000000000000000001 /* IconKitApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IconKitApp.swift; sourceTree = "<group>"; };
-		A10000000000000000000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A10000000000000000000003 /* Exporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Exporter.swift; sourceTree = "<group>"; };
 		A10000000000000000000004 /* ImageResizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageResizer.swift; sourceTree = "<group>"; };
 		A10000000000000000000005 /* AndroidExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AndroidExporter.swift; sourceTree = "<group>"; };
@@ -47,7 +45,6 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000001 /* IconKitApp.swift */,
-				A10000000000000000000002 /* ContentView.swift */,
 				A10000000000000000000003 /* Exporter.swift */,
 				A10000000000000000000004 /* ImageResizer.swift */,
 				A10000000000000000000005 /* AndroidExporter.swift */,
@@ -139,7 +136,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000000000000000000010 /* IconKitApp.swift in Sources */,
-				A10000000000000000000011 /* ContentView.swift in Sources */,
 				A10000000000000000000012 /* Exporter.swift in Sources */,
 				A10000000000000000000013 /* ImageResizer.swift in Sources */,
 				A10000000000000000000014 /* AndroidExporter.swift in Sources */,

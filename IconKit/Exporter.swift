@@ -186,12 +186,16 @@ struct AppleIconSpec {
         // ── iMessage ──────────────────────────────────────────────────────────
         case .iMessage:
             return [
-                .init("messages", 29,   2, subtype: "messaging", id: "msg29"),
-                .init("messages", 29,   3, subtype: "messaging", id: "msg29"),
-                .init("messages", 60,   2, subtype: "messaging", id: "msg60"),
-                .init("messages", 60,   3, subtype: "messaging", id: "msg60"),
-                .init("messages", 67,   2, subtype: "messages",  id: "msg67"),
-                .init("messages", 1024, 1, subtype: "messages",  id: "msgmarketing1024"),
+                // iMessage App 图标规格（Xcode Asset Catalog 标准）
+                .init("iphone",          29,   2, id: "msg_iphone29"),
+                .init("iphone",          29,   3, id: "msg_iphone29"),
+                .init("iphone",          60,   2, id: "msg_iphone60"),
+                .init("iphone",          60,   3, id: "msg_iphone60"),
+                .init("ipad",            29,   1, id: "msg_ipad29"),
+                .init("ipad",            29,   2, id: "msg_ipad29"),
+                .init("ipad",            40,   1, id: "msg_ipad40"),
+                .init("ipad",            40,   2, id: "msg_ipad40"),
+                .init("ios-marketing",   1024, 1, id: "msg_marketing1024"),
             ]
 
         // ── macOS ─────────────────────────────────────────────────────────────

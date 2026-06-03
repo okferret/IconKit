@@ -47,40 +47,40 @@ struct ScaleReducerView: View {
     // MARK: - Left Panel
 
     private var leftPanel: some View {
-    VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
 
-        // 拖拽区 + 操作栏（固定顶部）
-        VStack(spacing: 10) {
-            dropZone
-            actionBar
-        }
-        .padding(.horizontal, 14)
-        .padding(.top, 14)
-        .padding(.bottom, 10)
-
-        Divider().opacity(0.4)
-
-        // 文件列表（固定高度）
-        fileList
-
-        Divider().opacity(0.4)
-
-        // 设置区（可滚动，占满剩余空间）
-        ScrollView(.vertical, showsIndicators: false) {
-            settingsAreaScrollable
-                .padding(14)
-        }
-        .frame(maxHeight: .infinity)
-
-        Divider().opacity(0.4)
-
-        // 批量导出按钮（固定底部，始终可见）
-        exportActionArea
+            // 拖拽区 + 操作栏（固定顶部）
+            VStack(spacing: 10) {
+                dropZone
+                actionBar
+            }
             .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.top, 14)
+            .padding(.bottom, 10)
+
+            Divider().opacity(0.4)
+
+            // 文件列表（固定高度）
+            fileList
+
+            Divider().opacity(0.4)
+
+            // 设置区（可滚动，占满剩余空间）
+            ScrollView(.vertical, showsIndicators: false) {
+                settingsAreaScrollable
+                    .padding(14)
+            }
+            .frame(maxHeight: .infinity)
+
+            Divider().opacity(0.4)
+
+            // 批量导出按钮（固定底部，始终可见）
+            exportActionArea
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
     }
-    .background(Color(nsColor: .windowBackgroundColor))
-}
     // MARK: - Drop Zone
 
     private var dropZone: some View {
@@ -140,26 +140,21 @@ struct ScaleReducerView: View {
         .frame(height: 120)
         .animation(.easeInOut(duration: 0.15), value: isTargeted)
         .onDrop(of: [UTType.fileURL], isTargeted: $isTargeted) { providers in
-            let group = DispatchGroup()
-            var collected: [URL] = []
-            let lock = NSLock()
-
-            for p in providers {
-                group.enter()
-                _ = p.loadObject(ofClass: URL.self) { url, _ in
-                    if let url {
-                        lock.lock()
+            guard !providers.isEmpty else { return false }
+            // 使用 async/await 替代 DispatchGroup + NSLock，更安全、更简洁
+            Task { @MainActor in
+                var collected: [URL] = []
+                for p in providers {
+                    if let url = try? await p.loadItem(forTypeIdentifier: UTType.fileURL.identifier) as? URL {
                         collected.append(url)
-                        lock.unlock()
+                    } else if let data = try? await p.loadItem(forTypeIdentifier: UTType.fileURL.identifier) as? Data,
+                              let url = URL(dataRepresentation: data, relativeTo: nil) {
+                        collected.append(url)
                     }
-                    group.leave()
                 }
-            }
-
-            group.notify(queue: .main) {
                 if !collected.isEmpty { addURLs(collected) }
             }
-            return !providers.isEmpty
+            return true
         }
     }
 
@@ -500,7 +495,8 @@ struct ScaleReducerView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // 虚线边框用 overlay，padding 才能正确内缩
+        // 虚线边框用 overlay，clipShape 统一裁剪圆角，避免 .cornerRadius 与 overlay 不一致
+        .clipShape(RoundedRectangle(cornerRadius: 16))
         .overlay(
             RoundedRectangle(cornerRadius: 16)
                 .strokeBorder(
@@ -508,7 +504,6 @@ struct ScaleReducerView: View {
                     style: StrokeStyle(lineWidth: 1, dash: [8, 4])
                 )
         )
-        .cornerRadius(16.0)
         .animation(.easeInOut(duration: 0.2), value: previewImage == nil)
     }
 
@@ -629,12 +624,13 @@ struct ScaleReducerView: View {
 
     private func loadPreview(url: URL?) {
         guard let url else { previewImage = nil; return }
-        DispatchQueue.global(qos: .userInitiated).async {
-            let img = NSImage(contentsOf: url)
-            DispatchQueue.main.async {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    previewImage = img
-                }
+        // 使用 Task.detached 替代 DispatchQueue.global，与项目其他地方风格一致
+        Task { @MainActor in
+            let img = await Task.detached(priority: .userInitiated) {
+                NSImage(contentsOf: url)
+            }.value
+            withAnimation(.easeInOut(duration: 0.2)) {
+                previewImage = img
             }
         }
     }
@@ -701,12 +697,15 @@ struct ScaleReducerView: View {
                           userInfo: [NSLocalizedDescriptionKey: "请先选择导出目录。"])
         }
 
-        let data = try Data(contentsOf: inputURL)
-        guard let srcRep = NSBitmapImageRep(data: data) else {
+        // 将同步 IO 移到后台线程，避免阻塞主线程（@MainActor）
+        // 只从后台线程传回 Data（Sendable），在主线程解码为 NSBitmapImageRep，避免 Swift 6 Sendable 警告
+        let imageData: Data = try await Task.detached(priority: .userInitiated) {
+            try Data(contentsOf: inputURL)
+        }.value
+        guard let srcRep = NSBitmapImageRep(data: imageData) else {
             throw NSError(domain: "IconKit", code: -2,
                           userInfo: [NSLocalizedDescriptionKey: "无法解析图片。"])
         }
-
         let srcW = srcRep.pixelsWide
         let srcH = srcRep.pixelsHigh
 
@@ -717,17 +716,27 @@ struct ScaleReducerView: View {
             .replacingOccurrences(of: "@1x", with: "")
 
         if inputName.contains("@3x") {
-            // 使用 renderPNGExact 统一渲染，确保输出始终为 PNG 格式（即使源文件是 JPEG）
+            // @3x → 同时生成 @3x、@2x、@1x（直接高质量插值缩小，无需 AI 放大）
+            let (out2x, out1x) = makeDownscaledFrom3x(srcRep: srcRep)
+            // @3x 原图直接输出（统一转 PNG）
             try writeRep(srcRep, w: srcW, h: srcH,
                          to: outDir.appendingPathComponent("\(baseName)@3x.png"))
-            try writeRep(srcRep,
-                         w: Int(round(Double(srcW) * 2.0 / 3.0)),
-                         h: Int(round(Double(srcH) * 2.0 / 3.0)),
-                         to: outDir.appendingPathComponent("\(baseName)@2x.png"))
-            try writeRep(srcRep,
-                         w: Int(round(Double(srcW) / 3.0)),
-                         h: Int(round(Double(srcH) / 3.0)),
-                         to: outDir.appendingPathComponent("\(baseName).png"))
+            if let out2x {
+                try out2x.write(to: outDir.appendingPathComponent("\(baseName)@2x.png"))
+            } else {
+                try writeRep(srcRep,
+                             w: Int(round(Double(srcW) * 2.0 / 3.0)),
+                             h: Int(round(Double(srcH) * 2.0 / 3.0)),
+                             to: outDir.appendingPathComponent("\(baseName)@2x.png"))
+            }
+            if let out1x {
+                try out1x.write(to: outDir.appendingPathComponent("\(baseName).png"))
+            } else {
+                try writeRep(srcRep,
+                             w: Int(round(Double(srcW) / 3.0)),
+                             h: Int(round(Double(srcH) / 3.0)),
+                             to: outDir.appendingPathComponent("\(baseName).png"))
+            }
             return ""
 
         } else if inputName.contains("@2x") {
@@ -793,6 +802,24 @@ struct ScaleReducerView: View {
 
     // MARK: - AI Upscale
 
+    /// @3x → @2x + @1x：@3x 源图本身已是高分辨率，直接高质量插值缩小即可。
+    /// AI 放大对已高分辨率图像收益极低，且耗时数倍，故此分支始终使用插值。
+    /// - Note: inputURL 参数已移除，此分支不需要调用 AI 放大。
+    private func makeDownscaledFrom3x(srcRep: NSBitmapImageRep) -> (Data?, Data?) {
+        let srcW = srcRep.pixelsWide
+        let srcH = srcRep.pixelsHigh
+
+        // @3x 源图已是最高分辨率，跳过 AI 放大，直接高质量插值缩小
+        let w2 = Int(round(Double(srcW) * 2.0 / 3.0))
+        let h2 = Int(round(Double(srcH) * 2.0 / 3.0))
+        let w1 = Int(round(Double(srcW) / 3.0))
+        let h1 = Int(round(Double(srcH) / 3.0))
+        return (
+            renderPNGExact(from: srcRep, w: w2, h: h2),
+            renderPNGExact(from: srcRep, w: w1, h: h1)
+        )
+    }
+
     /// @2x → @3x：目标尺寸为 srcW * 1.5
     private func make3xFrom2x(inputURL: URL, srcRep: NSBitmapImageRep) async throws -> Data? {
         let srcW = srcRep.pixelsWide
@@ -804,13 +831,15 @@ struct ScaleReducerView: View {
             guard let rep4x = NSBitmapImageRep(data: ai) else {
                 return renderPNGExact(from: srcRep, w: targetW, h: targetH)
             }
-            let w3 = Int(round(Double(rep4x.pixelsWide) * 0.75))
-            let h3 = Int(round(Double(rep4x.pixelsHigh) * 0.75))
+            // 4x 结果缩到 1.5x（即 @3x）：4x * 0.375 = 1.5x
+            let w3 = Int(round(Double(rep4x.pixelsWide) * 0.375))
+            let h3 = Int(round(Double(rep4x.pixelsHigh) * 0.375))
             return renderPNGExact(from: rep4x, w: w3, h: h3)
         }
 
         return renderPNGExact(from: srcRep, w: targetW, h: targetH)
     }
+
     /// @1x → @2x + @3x：AI 只跑一次，同时返回两个尺寸的 PNG Data。
     private func makeUpscaledFrom1x(
         inputURL: URL,
@@ -821,7 +850,7 @@ struct ScaleReducerView: View {
 
         if preferAIUpscale, let ai = try await aiUpscaleTo4x(inputURL: inputURL),
            let rep4x = NSBitmapImageRep(data: ai) {
-            // 4x 结果缩到 2x（50%）和 3x（75%）
+            // 4x 结果缩到 @2x（50%）和 @3x（75%）
             let w2 = Int(round(Double(rep4x.pixelsWide) * 0.5))
             let h2 = Int(round(Double(rep4x.pixelsHigh) * 0.5))
             let w3 = Int(round(Double(rep4x.pixelsWide) * 0.75))
@@ -839,6 +868,10 @@ struct ScaleReducerView: View {
         )
     }
 
+    /// 调用 realesrgan-ncnn-vulkan 进行 4x AI 放大，返回 PNG Data。
+    /// 失败时返回 nil（由上层决定是否回退到插值），不抛出错误。
+    /// - 超时保护：60 秒后强制终止进程，避免永久阻塞。
+    /// - 临时文件：读取完成后立即删除，避免积累。
     private func aiUpscaleTo4x(inputURL: URL) async throws -> Data? {
         let tool: URL
         do {
@@ -858,7 +891,7 @@ struct ScaleReducerView: View {
             "-i", inputURL.path,
             "-o", outURL.path,
             "-n", "realesrgan-x4plus",
-            "-s", "2",
+            "-s", "4",
             "-f", "png"
         ]
         if let models = RealESRGANManager.shared.modelsDir(preferEmbedded: true) {
@@ -869,22 +902,48 @@ struct ScaleReducerView: View {
         proc.standardOutput = pipe
 
         // terminationHandler 在系统私有队列回调，使用 CheckedContinuation 安全桥接到 async/await
-        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data?, Error>) in
+        // 使用 nonisolated(unsafe) 标记 resumed 标志，防止 continuation 被多次 resume
+        let result: Data? = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data?, Error>) in
+            // 用原子标志防止 terminationHandler 与 catch 分支同时 resume continuation
+            let alreadyResumed = NSLock()
+            var resumed = false
+
+            func resumeOnce(_ value: Data?) {
+                alreadyResumed.lock()
+                defer { alreadyResumed.unlock() }
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume(returning: value)
+            }
+
             proc.terminationHandler = { p in
                 if p.terminationStatus == 0 {
                     let data = try? Data(contentsOf: outURL)
-                    continuation.resume(returning: data)
+                    // 读取完成后立即删除临时文件，避免积累
+                    try? fm.removeItem(at: outURL)
+                    resumeOnce(data)
                 } else {
+                    try? fm.removeItem(at: outURL)
                     // 进程失败时返回 nil 而非抛出，由上层决定是否回退到插值
-                    continuation.resume(returning: nil)
+                    resumeOnce(nil)
                 }
             }
             do {
                 try proc.run()
             } catch {
-                continuation.resume(returning: nil)
+                resumeOnce(nil)
+                return
+            }
+
+            // 超时保护：60 秒后强制终止进程，避免永久阻塞
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 60) {
+                if proc.isRunning {
+                    proc.terminate()
+                    // terminate() 会触发 terminationHandler，无需再次 resumeOnce
+                }
             }
         }
+        return result
     }
 
     // MARK: - Log helper

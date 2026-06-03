@@ -63,7 +63,16 @@ struct RootView: View {
         }
     }
 
-    @State private var selection: SidebarItem? = .scaleReducer
+    /// 上次选中的功能页（rawValue），使用 @AppStorage 持久化，下次启动时自动恢复。
+    @AppStorage("lastSelectedSidebarItem") private var selectionRaw: String = SidebarItem.scaleReducer.rawValue
+
+    /// 将 selectionRaw 桥接为 SidebarItem? Binding，供 List(selection:) 使用。
+    private var selectionBinding: Binding<SidebarItem?> {
+        Binding(
+            get: { SidebarItem(rawValue: selectionRaw) },
+            set: { selectionRaw = $0?.rawValue ?? SidebarItem.scaleReducer.rawValue }
+        )
+    }
 
     // MARK: - Export State
 
@@ -90,17 +99,18 @@ struct RootView: View {
                 .frame(minWidth: 480)
         }
         .navigationSplitViewStyle(.balanced)
-        .frame(width: 1000, height: 720)
+        // 使用 frame(minWidth:minHeight:) 而非固定尺寸，允许用户调整窗口大小
+        .frame(minWidth: 780, minHeight: 560)
         .alert("导出失败", isPresented: $showExportError) {
             Button("好的") {}
         } message: {
             Text(exportErrorMessage)
         }
         .onReceive(NotificationCenter.default.publisher(for: .pickImage)) { _ in
-            if selection == .export { pickExportImage() }
+            if selectionBinding.wrappedValue == .export { pickExportImage() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .exportIcons)) { _ in
-            if selection == .export, exportImage != nil,
+            if selectionBinding.wrappedValue == .export, exportImage != nil,
                (includeApple || includeAndroid) { runExport() }
         }
     }
@@ -108,7 +118,7 @@ struct RootView: View {
     // MARK: - Sidebar List
 
     private var sidebarList: some View {
-        List(selection: $selection) {
+        List(selection: selectionBinding) {
             // ── 功能导航 ──────────────────────────────────────────────────
             Section {
                 ForEach(SidebarItem.allCases, id: \.self) { item in
@@ -122,14 +132,14 @@ struct RootView: View {
             }
 
             // ── 应用图标 控制面板（仅在选中时展开）────────────────────────
-            if selection == .export {
+            if selectionBinding.wrappedValue == .export {
                 exportControlSections
             }
         }
         .listStyle(.sidebar)
         .navigationTitle("IconKit")
         .safeAreaInset(edge: .bottom) {
-            if selection == .export {
+            if selectionBinding.wrappedValue == .export {
                 exportBottomBar
             } else {
                 versionFooter
@@ -144,7 +154,7 @@ struct RootView: View {
             ZStack {
                 RoundedRectangle(cornerRadius: DS.radiusS)
                     .fill(
-                        selection == item
+                        selectionBinding.wrappedValue == item
                         ? item.accentColor.opacity(0.18)
                         : Color.secondary.opacity(0.1)
                     )
@@ -152,7 +162,7 @@ struct RootView: View {
                 Image(systemName: item.icon)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(
-                        selection == item ? item.accentColor : Color.secondary
+                        selectionBinding.wrappedValue == item ? item.accentColor : Color.secondary
                     )
             }
             VStack(alignment: .leading, spacing: 1) {
@@ -362,7 +372,7 @@ struct RootView: View {
 
     @ViewBuilder
     private var detailContent: some View {
-        switch selection ?? .export {
+        switch selectionBinding.wrappedValue ?? .export {
         case .export:
             exportPreview
         case .scaleReducer:
@@ -454,9 +464,13 @@ struct RootView: View {
         .contentShape(Rectangle())
         .onDrop(of: [UTType.fileURL], isTargeted: $isDropTargeted) { providers in
             guard let provider = providers.first else { return false }
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                if let url {
-                    DispatchQueue.main.async { loadExportImage(from: url) }
+            // 使用 Task + async/await 替代旧式回调，与 SwiftUI 并发模型一致
+            Task { @MainActor in
+                if let url = try? await provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) as? URL {
+                    loadExportImage(from: url)
+                } else if let data = try? await provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) as? Data,
+                          let url = URL(dataRepresentation: data, relativeTo: nil) {
+                    loadExportImage(from: url)
                 }
             }
             return true
@@ -594,30 +608,35 @@ struct RootView: View {
         isExporting = true
         exportStatus = "正在导出…"
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        // 使用 Task + detached 将耗时 IO 移到后台，完成后回到 @MainActor 更新 UI
+        let includeApple = self.includeApple
+        let includeAndroid = self.includeAndroid
+        let appleSets = self.appleSets
+
+        Task {
             do {
-                var outputs: [String] = []
-                if self.includeApple {
-                    let out = dir.appendingPathComponent("Apple", isDirectory: true)
-                    try IconExporter.exportAppleAll(from: image, to: out, sets: self.appleSets)
-                    outputs.append("✅ Apple → \(out.lastPathComponent)/")
-                }
-                if self.includeAndroid {
-                    let out = dir.appendingPathComponent("Android", isDirectory: true)
-                    try AndroidExporter.exportLauncherIcons(from: image, to: out)
-                    outputs.append("✅ Android → \(out.lastPathComponent)/")
-                }
-                DispatchQueue.main.async {
-                    self.isExporting = false
-                    self.exportStatus = "导出完成 🎉\n" + outputs.joined(separator: "\n")
-                    NSWorkspace.shared.open(dir)
-                }
+                let outputs: [String] = try await Task.detached(priority: .userInitiated) {
+                    var results: [String] = []
+                    if includeApple {
+                        let out = dir.appendingPathComponent("Apple", isDirectory: true)
+                        try IconExporter.exportAppleAll(from: image, to: out, sets: appleSets)
+                        results.append("✅ Apple → \(out.lastPathComponent)/")
+                    }
+                    if includeAndroid {
+                        let out = dir.appendingPathComponent("Android", isDirectory: true)
+                        try AndroidExporter.exportLauncherIcons(from: image, to: out)
+                        results.append("✅ Android → \(out.lastPathComponent)/")
+                    }
+                    return results
+                }.value
+                // 回到主线程（Task 在 @MainActor 上下文中，await 后自动回到主线程）
+                isExporting = false
+                exportStatus = "导出完成 🎉\n" + outputs.joined(separator: "\n")
+                NSWorkspace.shared.open(dir)
             } catch {
-                DispatchQueue.main.async {
-                    self.isExporting = false
-                    self.exportErrorMessage = error.localizedDescription
-                    self.showExportError = true
-                }
+                isExporting = false
+                exportErrorMessage = error.localizedDescription
+                showExportError = true
             }
         }
     }

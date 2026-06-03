@@ -6,7 +6,9 @@ struct IconKitApp: App {
         WindowGroup {
             RootView()
         }
-        .windowResizability(.contentSize)
+        // contentMinSize：允许用户自由调整窗口大小，但不小于 RootView 的 minWidth/minHeight
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 1000, height: 720)
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: true))
         .commands {
